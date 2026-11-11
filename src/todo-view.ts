@@ -1,6 +1,10 @@
 // Pure rendering for the todo list: the live widget above the input box and
 // the progress line shown in the conversation. Everything here is UI-only
 // text; none of it is ever put in tool result content (the model's context).
+// Widths are terminal cells (pi-tui visibleWidth), not code points: todo text
+// is model-authored and regularly carries CJK/emoji, which take two cells.
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+
 export interface Todo {
   id: number;
   text: string;
@@ -19,11 +23,20 @@ export const PLAIN_STYLE: TodoStyle = { bold: (s) => s, dim: (s) => s, accent: (
 
 const GAP = "  ";
 
-/** Cut `text` to `max` columns, ending in an ellipsis when it was cut. */
+/**
+ * pi-tui's truncateToWidth closes the ellipsis with `\x1b[0m` resets even for
+ * unstyled input, which would cancel the caller's styling mid-line. When the
+ * input carries no escape bytes there is nothing to close, so strip them and
+ * keep plain lines byte-clean.
+ */
+function cutToWidth(text: string, width: number): string {
+  const out = truncateToWidth(text, Math.max(0, width), "…");
+  return text.includes("\x1b") ? out : out.replace(/\x1b\[0m/g, "");
+}
+
+/** Cut `text` to `max` terminal cells, ending in an ellipsis when it was cut. */
 export function truncate(text: string, max: number): string {
-  if (max <= 0) return "";
-  if ([...text].length <= max) return text;
-  return [...text].slice(0, Math.max(0, max - 1)).join("") + "…";
+  return cutToWidth(text, max);
 }
 
 function counts(todos: readonly Todo[]) {
@@ -43,7 +56,10 @@ export function widgetLines(todos: readonly Todo[], width: number, st: TodoStyle
   const firstOpen = todos.findIndex((t) => !t.done);
 
   const marks = todos.map((t, i) => (t.done ? `✓ ${t.text}` : i === firstOpen ? `▸ ${t.text}` : `○ ${t.text}`));
-  const compactLength = [...[header, ...marks].join(GAP)].length;
+  // Cells, not code points: wide glyphs count 2. The old `[...joined].length`
+  // check passed a 163-code-point line carrying 8 CJK glyphs, which rendered
+  // 171 cells — 172 with the widget's one-column pad — on a 167-column terminal.
+  const compactLength = visibleWidth([header, ...marks].join(GAP));
   if (compactLength <= width) {
     return [
       [
@@ -77,8 +93,8 @@ export interface TodoDetails {
   error?: string;
 }
 
-/** The conversation progress line(s) for a finished todo call. */
-export function resultLines(d: TodoDetails, st: TodoStyle = PLAIN_STYLE): string[] {
+/** The conversation progress line(s) for a finished todo call, cut to `width` cells. */
+export function resultLines(d: TodoDetails, st: TodoStyle = PLAIN_STYLE, width: number = Number.POSITIVE_INFINITY): string[] {
   if (d.error) return [st.error(`Error: ${d.error}`)];
   if (d.action === "clear") return [`${st.accent("●")} ${st.bold("todo")} cleared`];
   const { done, total } = counts(d.todos);
@@ -89,5 +105,5 @@ export function resultLines(d: TodoDetails, st: TodoStyle = PLAIN_STYLE): string
   const lines = [first];
   const next = d.todos.find((t) => !t.done);
   if ((d.action === "add" || d.action === "toggle") && next && next.id !== d.item?.id) lines.push(st.dim(`${GAP}next: ${next.text}`));
-  return lines;
+  return Number.isFinite(width) ? lines.map((line) => cutToWidth(line, width)) : lines;
 }

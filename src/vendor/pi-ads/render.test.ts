@@ -38,6 +38,15 @@ function drawAt(content: unknown, width: number): string[] {
   return (content as (tui: unknown, theme: unknown) => { render(w: number): string[] })(undefined, theme).render(width);
 }
 
+/**
+ * The meter widget is a factory too; draw its lines at `width` (default 200, so
+ * short lines render verbatim) with the given theme (default: pi's own).
+ */
+function drawnMeter(content: unknown, width = 200, theme: unknown = { fg: (_c: string, t: string) => t, bold: (t: string) => t }): string[] {
+  expect(typeof content).toBe("function");
+  return (content as (tui: unknown, theme: unknown) => { render(w: number): string[] })(undefined, theme).render(width);
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   if (status === 204) return new Response(null, { status: 204 });
   return Response.json(body, { status });
@@ -407,19 +416,22 @@ describe("meter: server-supplied notice (#225)", () => {
     const { ctx, widgetCalls } = fakeCtx();
     const notice = "out of free usage today (established tier). Buy more at https://api.test/buy/tok — $5 or $10, card or USDC. Free usage resets at 00:00 UTC.";
     await renderMeter(deps(meFetch({ remaining_usd_today: 0, notice })), ctx);
-    expect(widgetCalls).toEqual([{ id: METER_WIDGET_ID, content: [notice], options: undefined }]);
+    expect(widgetCalls[0]!.id).toBe(METER_WIDGET_ID);
+    expect(widgetCalls[0]!.options).toBeUndefined();
+    expect(drawnMeter(widgetCalls[0]!.content)).toEqual([notice]);
   });
 
   test("a notice is plain text: terminal control sequences are stripped, never interpreted", async () => {
     const { ctx, widgetCalls } = fakeCtx();
     await renderMeter(deps(meFetch({ remaining_usd_today: 0, notice: "buy \u001b]0;pwned\u0007more \u001b[31mnow\u001b[0m" })), ctx);
-    expect(widgetCalls[0]!.content).toEqual(["buy more now"]);
+    expect(drawnMeter(widgetCalls[0]!.content)).toEqual(["buy more now"]);
   });
 
   test("no notice + exhausted budget → the baked daily_cap string, byte-identical to before", async () => {
     const { ctx, widgetCalls } = fakeCtx();
     await renderMeter(deps(meFetch({ remaining_usd_today: 0 })), ctx);
-    expect(widgetCalls).toEqual([{ id: METER_WIDGET_ID, content: [mapErrorCode("daily_cap")], options: undefined }]);
+    expect(widgetCalls[0]!.id).toBe(METER_WIDGET_ID);
+    expect(drawnMeter(widgetCalls[0]!.content)).toEqual([mapErrorCode("daily_cap")]);
   });
 
   test("no notice (or an empty one) + budget left on an old server → no widget, as before", async () => {
@@ -478,7 +490,7 @@ describe("meter: server-supplied notice (#225)", () => {
       ctx,
     );
     expect(statusCalls.at(-1)).toEqual({ key: METER_STATUS_KEY, text: "0 credits · slow lane" });
-    expect(widgetCalls.at(-1)!.content).toEqual(["Out of free credits — slow lane until refill"]);
+    expect(drawnMeter(widgetCalls.at(-1)!.content)).toEqual(["Out of free credits — slow lane until refill"]);
   });
 
   test("old server without credit fields and a notice both leave the footer status cleared", async () => {
@@ -510,7 +522,9 @@ describe("meter: low-credit and slow-lane nudges", () => {
   test("exactly 10% shows a warning-colored widget with a clickable link; footer unchanged", async () => {
     const { ctx, widgetCalls, statusCalls } = colorCtx();
     await renderMeter(deps(me(LOW_CREDIT_FRACTION * 15_000)), ctx);
-    expect(widgetCalls.at(-1)!.content).toEqual([`<warning>Low on credits: 1,500 left today · Buy more: ${link("freepi.ai/buy")}</warning>`]);
+    expect(drawnMeter(widgetCalls.at(-1)!.content, 200, (ctx.ui as unknown as { theme: unknown }).theme)).toEqual([
+      `<warning>Low on credits: 1,500 left today · Buy more: ${link("freepi.ai/buy")}</warning>`,
+    ]);
     expect(statusCalls.at(-1)!.text).toBe("<muted>1,500 credits</muted>");
   });
 
@@ -523,7 +537,7 @@ describe("meter: low-credit and slow-lane nudges", () => {
   test("the raw buy_url is only the link target, never visible text", async () => {
     const { ctx, widgetCalls } = colorCtx();
     await renderMeter(deps(me(1_200)), ctx);
-    const line = (widgetCalls.at(-1)!.content as string[])[0]!;
+    const line = drawnMeter(widgetCalls.at(-1)!.content, 200, (ctx.ui as unknown as { theme: unknown }).theme)[0]!;
     const visible = line.replace(/\x1b\]8;;[^\x07]*\x07/g, "");
     expect(visible).not.toContain("SECRET");
     expect(visible).not.toContain("error");
@@ -532,7 +546,7 @@ describe("meter: low-credit and slow-lane nudges", () => {
   test("a buy_url carrying control bytes cannot break out of the OSC 8 target", async () => {
     const { ctx, widgetCalls } = colorCtx();
     await renderMeter(deps(me(1_200, { buy_url: `${BUY}\x07\x1b[2J` })), ctx);
-    const line = (widgetCalls.at(-1)!.content as string[])[0]!;
+    const line = drawnMeter(widgetCalls.at(-1)!.content, 200, (ctx.ui as unknown as { theme: unknown }).theme)[0]!;
     expect(line).not.toContain("\x1b[2J");
     expect(line).toContain(link("freepi.ai/buy"));
   });
@@ -540,14 +554,18 @@ describe("meter: low-credit and slow-lane nudges", () => {
   test("no buy_url → warning without a link", async () => {
     const { ctx, widgetCalls } = colorCtx();
     await renderMeter(deps(me(1_200, { buy_url: undefined })), ctx);
-    expect(widgetCalls.at(-1)!.content).toEqual(["<warning>Low on credits: 1,200 left today</warning>"]);
+    expect(drawnMeter(widgetCalls.at(-1)!.content, 200, (ctx.ui as unknown as { theme: unknown }).theme)).toEqual([
+      "<warning>Low on credits: 1,200 left today</warning>",
+    ]);
   });
 
   test("slow lane: footer plus warning widget with link", async () => {
     const { ctx, widgetCalls, statusCalls } = colorCtx();
     await renderMeter(deps(me(0, { lane: "fallback" })), ctx);
     expect(statusCalls.at(-1)!.text).toBe("<muted>0 credits · slow lane</muted>");
-    expect(widgetCalls.at(-1)!.content).toEqual([`<warning>Out of free credits — slow lane until refill · Buy more: ${link("freepi.ai/buy")}</warning>`]);
+    expect(drawnMeter(widgetCalls.at(-1)!.content, 200, (ctx.ui as unknown as { theme: unknown }).theme)).toEqual([
+      `<warning>Out of free credits — slow lane until refill · Buy more: ${link("freepi.ai/buy")}</warning>`,
+    ]);
   });
 });
 
@@ -561,12 +579,12 @@ describe("meter: one-turn purchase confirmation when credit_usd rises", () => {
     await renderMeter(deps(meAt(0)), ctx);
     expect(widgetCalls.at(-1)!.content).toBeUndefined();
     await renderMeter(deps(meAt(4)), ctx);
-    expect(widgetCalls.at(-1)!.content).toEqual([creditAddedMessage(4)]);
+    expect(drawnMeter(widgetCalls.at(-1)!.content)).toEqual([creditAddedMessage(4)]);
     // Real $5-pack grant ($3.75) confirms as round credits, never the granted dollars.
     expect(creditAddedMessage(3.75)).toBe("Payment received — 50,000 credits added to your balance.");
     for (let i = 1; i < CONFIRM_TURNS; i++) {
       await renderMeter(deps(meAt(4)), ctx);
-      expect(widgetCalls.at(-1)!.content).toEqual([creditAddedMessage(4)]);
+      expect(drawnMeter(widgetCalls.at(-1)!.content)).toEqual([creditAddedMessage(4)]);
     }
     await renderMeter(deps(meAt(4)), ctx);
     expect(widgetCalls.at(-1)!.content).toBeUndefined();

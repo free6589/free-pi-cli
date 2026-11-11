@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { resultLines, truncate, widgetLines, type Todo } from "../src/todo-view";
 
 const sample = (): Todo[] => [
@@ -30,6 +31,16 @@ describe("widgetLines", () => {
     const lines = widgetLines([{ id: 1, text: "x".repeat(80), done: false }], 30);
     expect(lines[1]!.length).toBe(30);
     expect(lines[1]!.endsWith("…")).toBe(true);
+  });
+
+  test("wide glyphs count 2 cells: the compact line never renders past the width", () => {
+    // The old code-point check passed this 163-code-point compact line at a
+    // 165-cell budget; it rendered 171 cells, 172 with todo-tool's one-column
+    // pad, on a 167-column terminal. Cells, not code points, decide.
+    const todos: Todo[] = [{ id: 1, done: false, text: `${"a".repeat(142)}${"界".repeat(8)}` }];
+    const lines = widgetLines(todos, 165).map((l) => ` ${l}`); // todo-tool pads one column
+    expect(lines.length).toBeGreaterThan(1); // compact branch no longer taken
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(166);
   });
 
   test("all done: compact when it fits, header plus 'All done' when tall", () => {
@@ -86,5 +97,22 @@ describe("resultLines", () => {
   test("finishing the last item has no next line", () => {
     const todos: Todo[] = [{ id: 1, text: "one", done: true }];
     expect(resultLines({ action: "toggle", ...base(todos), item: todos[0]! })).toEqual(["● todo 1/1  ✓ one"]);
+  });
+  test("wide glyphs are cut to width cells, not code points", () => {
+    // CJK todo text: 2 cells per glyph. Without a width the full line is
+    // returned (back-compat); with one it never renders past the budget.
+    const item = { id: 1, done: false, text: "界".repeat(50) };
+    const d = { action: "add" as const, todos: [item], nextId: 2, item };
+    expect(visibleWidth(resultLines(d)[0]!)).toBeGreaterThan(40);
+    const cut = resultLines(d, undefined, 40);
+    expect(cut[0]!.endsWith("…")).toBe(true);
+    for (const line of cut) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+  });
+  test("no width (Infinity default) keeps old verbatim lines", () => {
+    const todos = sample();
+    expect(resultLines({ action: "toggle", ...base(todos), item: todos[1]! })).toEqual([
+      "● todo 2/4  ✓ Find expiry calc",
+      "  next: Fix off-by-one in expiresAt",
+    ]);
   });
 });

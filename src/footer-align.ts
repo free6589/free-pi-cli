@@ -2,12 +2,14 @@
 // line, left-aligned, and collapses any padding we put in the status text. So we
 // wrap the footer's render() on our own InteractiveMode instance and right-align
 // that last line. pi assigns `mode.footer` once, in its constructor.
+import { visibleWidth } from "@earendil-works/pi-tui";
+
 const ANSI = /\x1b\[[0-9;]*m/g;
 
 // Only lines whose visible text is single-column Latin-1 (the credits meter) are
 // measured; anything else (emoji, CJK, OSC 8 links from another extension) is left
-// as pi drew it, so padding can never push a line past the terminal width.
-// ponytail: no pi-tui visibleWidth here; widen if a status ever needs wide glyphs aligned.
+// as pi drew it, so padding can never push a line past the terminal width. The
+// pad is computed in terminal cells (visibleWidth), never string length.
 const SIMPLE = /^[\x20-\x7e\xa0-\xff]*$/;
 
 export function installFooterRightAlign(mode: object): void {
@@ -20,6 +22,6 @@ export function installFooterRightAlign(mode: object): void {
     const text = last.replace(ANSI, "");
     if (!SIMPLE.test(text)) return lines;
     // Never exceed width: when the line already fills it, pad nothing.
-    return [...lines.slice(0, -1), " ".repeat(Math.max(0, w - text.length)) + last];
+    return [...lines.slice(0, -1), " ".repeat(Math.max(0, w - visibleWidth(last))) + last];
   };
 }
