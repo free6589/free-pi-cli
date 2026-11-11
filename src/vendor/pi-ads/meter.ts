@@ -2,6 +2,7 @@
 // after every turn end (see index.ts). Stateless — unlike banner/inline it
 // never posts an impression, so it needs no per-instance dedup state.
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { AdsDeps } from "./api";
 import { fetchMe } from "./api";
 import { usdToCredits } from "@freepi/shared";
@@ -12,6 +13,21 @@ export const METER_WIDGET_ID = "freepi-meter";
 // Routine credit balance lives in pi's footer status bar; the widget is kept
 // for notices and errors only.
 export const METER_STATUS_KEY = "freepi-credits";
+
+/**
+ * Widget factory, same shape as the ad widget: pi renders widget lines at the
+ * live width (behind a one-column indent) and throws on a wider line, and this
+ * module's strings are not width-bounded at setWidget time — the server-supplied
+ * notice in particular is arbitrary text. Every line is cut to width-1 cells
+ * (ANSI/OSC 8 escapes and wide glyphs measured by pi-tui, so colors survive
+ * and CJK is not over-counted) at each paint, so a resize re-truncates.
+ */
+function meterWidget(lines: string[]) {
+  return (_tui: unknown, _theme: unknown) => ({
+    render: (width: number): string[] => lines.map((line) => truncateToWidth(line, Math.max(0, width - 1), "…")),
+    invalidate() {},
+  });
+}
 
 /** Standard-lane balance at or below this share of the daily allowance triggers the low-credit warning. */
 export const LOW_CREDIT_FRACTION = 0.1;
@@ -61,7 +77,7 @@ export async function renderMeter(deps: AdsDeps, ctx: ExtensionContext): Promise
   if (added > 0) confirm = { addedUsd: added, turnsLeft: CONFIRM_TURNS };
   if (confirm && confirm.turnsLeft > 0) {
     confirm.turnsLeft--;
-    ctx.ui.setWidget(METER_WIDGET_ID, [renderErrorLine(creditAddedMessage(confirm.addedUsd), theme)]);
+    ctx.ui.setWidget(METER_WIDGET_ID, meterWidget([renderErrorLine(creditAddedMessage(confirm.addedUsd), theme)]));
     return;
   }
   confirm = undefined;
@@ -72,16 +88,16 @@ export async function renderMeter(deps: AdsDeps, ctx: ExtensionContext): Promise
   // Absent (old server) → the exact pre-#225 behavior below.
   const notice = typeof me.notice === "string" ? sanitizeText(me.notice).trim() : "";
   if (notice !== "") {
-    ctx.ui.setWidget(METER_WIDGET_ID, [renderErrorLine(notice, theme)]);
+    ctx.ui.setWidget(METER_WIDGET_ID, meterWidget([renderErrorLine(notice, theme)]));
     return;
   }
   // Phase 0: credits, never dollars, for free usage. Server-owned fields
   // (optional so an older /me still falls through to the pre-Phase-0 hide).
   if (me.lane === "fallback") {
     ctx.ui.setStatus(METER_STATUS_KEY, theme.fg("muted", "0 credits · slow lane"));
-    ctx.ui.setWidget(METER_WIDGET_ID, [
+    ctx.ui.setWidget(METER_WIDGET_ID, meterWidget([
       renderWarningLine(`Out of free credits — slow lane until refill${buyMore(me.buy_url)}`, theme),
-    ]);
+    ]));
     return;
   }
   if (
@@ -98,7 +114,7 @@ export async function renderMeter(deps: AdsDeps, ctx: ExtensionContext): Promise
       const low = left > 0 && left <= me.allowance_credits * LOW_CREDIT_FRACTION;
       ctx.ui.setWidget(
         METER_WIDGET_ID,
-        low ? [renderWarningLine(`Low on credits: ${left.toLocaleString("en-US")} left today${buyMore(me.buy_url)}`, theme)] : undefined,
+        low ? meterWidget([renderWarningLine(`Low on credits: ${left.toLocaleString("en-US")} left today${buyMore(me.buy_url)}`, theme)]) : undefined,
       );
       return;
     }
@@ -110,5 +126,5 @@ export async function renderMeter(deps: AdsDeps, ctx: ExtensionContext): Promise
     ctx.ui.setWidget(METER_WIDGET_ID, undefined);
     return;
   }
-  ctx.ui.setWidget(METER_WIDGET_ID, [renderErrorLine(mapErrorCode(errorCode), theme)]);
+  ctx.ui.setWidget(METER_WIDGET_ID, meterWidget([renderErrorLine(mapErrorCode(errorCode), theme)]));
 }

@@ -1,9 +1,12 @@
 // U1: replaces pi's built-in startup header (hidden via quietStartup, see
 // pi-launch.ts) with a short free-pi header — name, model, welcome line, and
 // the five commands a user needs. KTD1/KTD2: a plain object component
-// (render/invalidate/setExpanded), no @earendil-works/pi-tui dependency —
-// same structural-typing approach as packages/pi-ads/src/style.ts.
+// (render/invalidate/setExpanded) with structural ThemeLike/TuiLike types —
+// same approach as packages/pi-ads/src/style.ts; only pi-tui's pure width
+// helpers are imported. Widths are terminal cells (visibleWidth), never
+// string/code-point length: the model name can carry wide glyphs.
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 /** Structural subset of pi's `Theme` class actually used for styling. */
 export interface ThemeLike {
@@ -66,10 +69,11 @@ export function updateBannerLines(theme: ThemeLike, latest: string, width: numbe
 }
 
 function truncate(text: string, maxWidth: number): string {
-  if (maxWidth <= 0) return "";
-  if (text.length <= maxWidth) return text;
-  if (maxWidth <= 1) return text.slice(0, maxWidth);
-  return `${text.slice(0, maxWidth - 1)}…`;
+  const out = truncateToWidth(text, Math.max(0, maxWidth), "…");
+  // pi-tui closes the ellipsis with reset codes even for unstyled input; the
+  // header truncates plain text only (styling is applied around it), so strip
+  // them to keep the line byte-identical to the pre-pi-tui truncation.
+  return text.includes("\x1b") ? out : out.replace(/\x1b\[0m/g, "");
 }
 
 /**
@@ -88,7 +92,7 @@ export function headerLines(
   // One column is reserved for the left margin added below.
   const inner = width - 1;
   const fit = (plain: string, styled: () => string): string =>
-    plain.length <= inner ? styled() : theme.fg("dim", truncate(plain, inner));
+    visibleWidth(plain) <= inner ? styled() : theme.fg("dim", truncate(plain, inner));
 
   const titleRest = ` · ${modelName} · ctrl+o for help`;
   const title = fit(

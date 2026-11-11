@@ -10,9 +10,10 @@
 //
 // Differences from pi's example: typebox literals instead of pi-ai's
 // StringEnum, and plain objects implementing pi-tui's Component interface
-// (render/invalidate) instead of importing pi-tui, so the CLI needs no new
-// dependency.
+// (render/invalidate) instead of importing pi-tui components; only its pure
+// width helpers (truncateToWidth) are imported.
 import type { ExtensionAPI, ExtensionContext, InlineExtension, Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { resultLines, widgetLines, type Todo, type TodoDetails, type TodoStyle } from "./todo-view";
 
@@ -221,10 +222,15 @@ export function createTodoToolExtension(options: { timers?: TodoTimers } = {}): 
         },
         renderResult(res, _opts, theme) {
           const details = res.details as TodoDetails | undefined;
-          const lines = details?.action
-            ? resultLines(details, styleFrom(theme))
-            : [res.content[0]?.type === "text" ? res.content[0].text : ""];
-          return { render: () => lines, invalidate() {} };
+          return {
+            // pi draws these lines at the live width; cut them to it in cells,
+            // not code points (todo text is model-authored, may carry CJK).
+            render: (width: number) =>
+              details?.action
+                ? resultLines(details, styleFrom(theme), width)
+                : [truncateToWidth(res.content[0]?.type === "text" ? (res.content[0].text ?? "") : "", Math.max(0, width), "…")],
+            invalidate() {},
+          };
         },
       });
 
